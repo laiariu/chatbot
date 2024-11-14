@@ -1,56 +1,67 @@
 import streamlit as st
-from openai import OpenAI
+import dataiku
+import numpy as np
+import pandas as pd
+import altair as alt
 
-# Show title and description.
-st.title("💬 Chatbot")
+DATE_TIME_COL = "date/time"
+
+#############
+# Functions #
+#############
+
+@st.experimental_singleton
+def load_data(nrows):
+    data = dataiku.Dataset("uber_raw_data_sep14") \
+        .get_dataframe(limit=nrows)
+    lowercase = lambda x: str(x).lower()
+    data.rename(lowercase, axis='columns', inplace=True)
+    data[DATE_TIME_COL] = pd.to_datetime(data[DATE_TIME_COL],
+                                       format="%m/%d/%Y %H:%M:%S")
+    return data
+
+@st.experimental_memo
+def histdata(df):
+    hist = np.histogram(df[DATE_TIME_COL].dt.hour, bins=24, range=(0, 24))[0]
+    return pd.DataFrame({"hour": range(24), "pickups": hist})
+
+##############
+# App layout #
+##############
+
+# Load a sample from the source Dataset
+data = load_data(nrows=10000)
+
+st.title('Uber pickups in NYC')
+
+if st.checkbox('Show raw data'):
+    st.subheader('Raw data')
+    st.write(data)
+
+# Histogram
+
+chart_data = histdata(data)
 st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+    f"""**Breakdown of rides per hour**"""
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+st.altair_chart(
+    alt.Chart(chart_data)
+    .mark_area(
+        interpolate="step-after",
+    )
+    .encode(
+        x=alt.X("hour:Q", scale=alt.Scale(nice=False)),
+        y=alt.Y("pickups:Q"),
+        tooltip=["hour", "pickups"],
+    )
+    .configure_mark(opacity=0.2, color="red"),
+    use_container_width=True,
+)
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+# Map and slider
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
-
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
-
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+hour_to_filter = st.slider('', 0, 23, 17)
+filtered_data = data[data[DATE_TIME_COL].dt.hour == hour_to_filter]
+st.subheader(f"Map of all pickups at {hour_to_filter}:00")
+st.map(filtered_data)
